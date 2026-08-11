@@ -7,8 +7,6 @@ import { sendTelegramMessage, telegramMessageInputSchema } from "@ferfarbader/se
 
 const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY || "pk_test_ZHJpdmVuLWJ1Zy02My5jbGVyay5hY2NvdW50cy5kZXYk";
 const clerkSecretKey = process.env.CLERK_SECRET_KEY || "sk_test_aCulM73Io70L3kcB2PJ1c4anmWRf4qajBG6zj9BKaj";
-import dotenv from "dotenv";
-dotenv.config();
 
 if (!clerkPublishableKey) {
   throw new Error("CLERK_PUBLISHABLE_KEY environment variable is required");
