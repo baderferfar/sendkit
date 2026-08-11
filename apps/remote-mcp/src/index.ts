@@ -1,4 +1,3 @@
-
 import { Hono, type Context } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createClerkClient } from "@clerk/backend";
