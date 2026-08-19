@@ -3,11 +3,11 @@ import { Hono, type Context } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createClerkClient } from "@clerk/backend";
 import { generateClerkProtectedResourceMetadata } from "@clerk/mcp-tools/server";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/WebStandardStreamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { sendTelegramMessage, telegramMessageInputSchema } from "@ferfarbader/sendkit-core";
 
-const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY || "pk_test_ZHJpdmVuLWJ1Zy02My5jbGVyay5hY2NvdW50cy5kZXYk";
-const clerkSecretKey = process.env.CLERK_SECRET_KEY || "sk_test_aCulM73Io70L3kcB2PJ1c4anmWRf4qajBG6zj9BKaj";
+const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY;
+const clerkSecretKey = process.env.CLERK_SECRET_KEY;
 
 if (!clerkPublishableKey) {
   throw new Error("CLERK_PUBLISHABLE_KEY environment variable is required");
@@ -37,7 +37,7 @@ function createServer(botToken: string) {
     async (input) => {
       const result = await sendTelegramMessage({
         ...input,
-        botToken,
+        botToken
       });
       return {
         content: [
@@ -111,12 +111,13 @@ app.notFound((c) => {
   return c.json({ error: "Not Found" }, 404);
 });
 
-const port = Number(process.env.PORT ?? "3000");
+const port = Number(process.env.PORT ?? 3000);
 
 export default {
   port,
   fetch: (req: Request) => {
     const url = new URL(req.url);
+
     url.protocol = req.headers.get("x-forwarded-proto") ?? url.protocol;
     url.host = req.headers.get("x-forwarded-host") ?? url.host;
     return app.fetch(new Request(url, req));

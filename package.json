@@ -30,6 +30,7 @@
     "packages/*"
   ],
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "commander": "^15.0.0"
   }
 }

@@ -13,7 +13,7 @@
     "@clerk/backend": "^3.11.7",
     "@clerk/mcp-tools": "^0.6.0",
     "@ferfarbader/sendkit-core": "^0.0.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "hono": "^4.12.31"
   }
 }
