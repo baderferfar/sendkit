@@ -1,183 +1,185 @@
 ---
 name: sendkit
-description: Send Telegram messages from agents using SendKit, either through the SendKit MCP `telegram` tool or the `sendkit` CLI as a fallback. Use this skill whenever the user wants to send, deliver, or push a Telegram message or notification from an agent, mentions SendKit or the SendKit toolset in any form (`@ferfarbader/sendkit`, `sendkit-core`, `sendkit-mcp`, `sendkit-local`, `sendkit-remote`), wants to interact with, wire up, or manually verify SendKit end to end, needs to pick between the MCP and CLI workflows, or is debugging a failed Telegram send (bad chat ID, missing bot token, 401/403 from Telegram). Applies even when the user never says "SendKit" — "text me when the build finishes", "ping my Telegram group with the results", or "notify me on Telegram" are all this skill.
+description: Send Telegram messages from an agent using the SendKit MCP `telegram` tool, falling back to the `sendkit` CLI when no MCP server is connected. Use this skill whenever the user wants to send, deliver, notify, ping, or DM someone over Telegram, mentions SendKit or any part of its toolset (sendkit-core, sendkit CLI, sendkit-mcp local server, sendkit-remote server), wants to confirm or manually verify that a message actually arrived, or is deciding between the MCP and CLI paths — even if they never say "SendKit" or "MCP" out loud.
 ---
 
 # SendKit
 
-SendKit sends Telegram messages. It ships one capability, deliberately: `sendTelegramMessage` in
-`@ferfarbader/sendkit-core`, exposed through three surfaces that all wrap that same function.
+SendKit sends Telegram messages. It ships three surfaces over one shared
+implementation, so they behave identically and differ only in how the bot token
+reaches them:
 
-Everything below reflects the code in this repo — verify against the source if something looks off,
-since the surfaces are thin enough that reading them is faster than guessing.
+| Surface | Installed as | Entry point | Where the bot token comes from |
+| --- | --- | --- | --- |
+| Local MCP server (stdio) | `@ferfarbader/sendkit-mcp` | `sendkit-mcp`, tool `telegram` | `TELEGRAM_TOKEN` env var |
+| CLI | `@ferfarbader/sendkit` | `sendkit telegram <chatId> <message>` | `~/.config/sendkit/config.json`, written by `sendkit init` |
+| Remote MCP server (HTTP) | hosted endpoint | `https://<host>/<botToken>/mcp`, tool `telegram` | the bot token in the URL, behind OAuth |
 
-| Surface | Package | Entry | Token comes from |
-|---|---|---|---|
-| Local MCP (stdio) | `@ferfarbader/sendkit-mcp` | `sendkit-mcp` | `TELEGRAM_TOKEN` env var |
-| Remote MCP (HTTP) | `apps/remote-mcp` | `POST /:botToken/mcp` | URL path segment + Clerk OAuth |
-| CLI | `@ferfarbader/sendkit` | `sendkit` | `~/.config/sendkit/config.json` |
+Every surface takes the same two inputs — `chatId` and `message`, both non-empty
+strings — and returns the same result: `{ ok: true, chatId, messageId }`. The
+`messageId` is Telegram's own receipt, so it is the one piece of evidence worth
+carrying back to the user.
 
-## Choosing MCP or CLI
+## Choose a path: MCP first, CLI as fallback
 
-**Reach for the MCP tool first.** If a `telegram` tool is in your available tools, use it. It's one
-call, it returns structured output you can branch on, and it keeps the bot token out of your shell
-history and out of your context entirely — the server injects it, so you never handle the secret.
+Prefer an MCP `telegram` tool when one is connected. It carries the token for
+you, validates arguments against the schema before the call, and returns
+`structuredContent` you can read directly — no shell quoting, no token ever
+passing through a command line where it could land in shell history or a
+transcript.
 
-**Fall back to the CLI when** no `telegram` MCP tool is connected, the MCP server is erroring and you
-need to isolate whether the fault is in transport or in the Telegram call itself, or you're inside a
-shell script or CI step where adding an MCP server isn't worth it.
+Fall back to the CLI when there is no MCP server available, when the user
+explicitly asks for the CLI, or when you are debugging SendKit itself and want
+to see the raw JSON response. The trade-off to keep in mind: the CLI reads the
+token from a local config file, so it only works on a machine where
+`sendkit init` has already run.
 
-Don't set up an MCP server mid-task just to send one message — if the CLI is already configured, use
-it. Conversely, don't shell out repeatedly if the MCP tool is right there.
+If both are available and the user has no preference, use the MCP tool and say
+which path you took. Users configuring SendKit want to know whether their MCP
+wiring is actually being exercised.
 
-## Sending via the MCP tool
+## Before sending: get the two inputs right
 
-The tool is named `telegram` on both the local (`sendkit-local`) and remote (`sendkit-remote`)
-servers. Its input schema is exactly two required fields:
+A Telegram message is an outward-facing, irreversible action — once it is
+delivered you cannot unsend it for the recipient. So resolve both inputs
+concretely first:
 
-```json
-{ "chatId": "123456789", "message": "Build passed on main." }
+- **`chatId`** — a numeric string like `"123456789"` for a direct chat, or a
+  negative one like `"-1001234567890"` for a group or channel. Never guess or
+  invent a chat ID, and never reuse one from an unrelated example: a wrong ID
+  either errors out or delivers someone's message to a stranger. If you don't
+  have it, ask. If the user doesn't know theirs, have them message the bot and
+  then read the ID from `https://api.telegram.org/bot<token>/getUpdates` (the
+  `message.chat.id` field) — remind them that URL contains the token, so it
+  shouldn't be pasted into a shared channel.
+- **`message`** — the exact text to deliver. Send plain text; no surface sets
+  `parse_mode`, so Markdown and HTML markup arrive as literal characters rather
+  than formatting. Telegram caps a single message at 4096 characters; for
+  anything longer, split it into several sends and number them so the recipient
+  can follow the order.
+
+When the user's request is ambiguous about *what* to say, draft the text and show
+it to them before sending rather than sending an approximation. One call sends to
+one chat, so fan-out to several recipients means one call per chat ID.
+
+## Send via the MCP `telegram` tool
+
+Call the `telegram` tool with `{ "chatId": "...", "message": "..." }`. Both the
+local and remote servers register the tool under the same name with the same
+schema, so the call looks identical either way.
+
+On success it returns text like `Message sent to 123456789 with messageId 42`
+plus structured `{ ok: true, chatId, messageId }`.
+
+## Send via the CLI
+
+```bash
+# One-time per machine: store the bot token at ~/.config/sendkit/config.json (mode 0600)
+sendkit init --telegram-bot-token <botToken>
+
+# Send
+sendkit telegram "123456789" "Deploy finished successfully."
 ```
 
-- `chatId` — string, non-empty. Numeric IDs, negative group IDs (`"-1001234567890"`), and `@channel`
-  handles all go here as strings. Passing a number fails schema validation.
-- `message` — string, non-empty. Plain text only; see [Message content](#message-content).
+The send command prints the JSON result on success —
+`{"ok":true,"chatId":"123456789","messageId":42}` — and on failure prints the
+error message to stderr and exits non-zero. Read the exit code, not just the
+output: an error line without a JSON result means nothing was delivered.
 
-Never pass a `botToken` in the tool input — it isn't in the schema, and the server supplies it. If
-you find yourself wanting to, you've got the wrong surface; use the CLI.
+Quote the message as a single argument. In PowerShell use double quotes and
+escape any inner double quotes with a backtick; in bash prefer single quotes for
+text containing `$` or backticks. An unquoted multi-word message becomes extra
+positional arguments and the command fails instead of sending.
 
-Structured output on success:
+If the token was never configured, both `sendkit` commands fail with
+`Telegram Bot token is required. Run \`sendkit init\`` — that is a setup gap, not
+a Telegram problem, so route the user to `init` rather than retrying.
 
-```json
-{ "ok": true, "chatId": "123456789", "messageId": 42 }
-```
+## Verify the send
 
-Report the `messageId` back when the user asked for confirmation of delivery — it's the only proof
-the message actually landed, and it's what they'd use to find the message later.
+`ok: true` with a `messageId` means Telegram accepted and delivered the message —
+that is the strongest confirmation SendKit can give, and it is worth reporting
+verbatim ("delivered to chat 123456789, message ID 42") so the user can match it
+against what they see in their client.
 
-### Wiring up the local MCP server
+When the user asks to verify manually, or when a send is important enough that
+silent misdelivery would be costly, walk them through it:
 
-The local server talks stdio and reads the bot token from `TELEGRAM_TOKEN` at call time:
+1. Report the `chatId` and `messageId` you got back.
+2. Ask them to open that chat in Telegram and confirm the text arrived intact —
+   especially line breaks and any characters that could have been mangled by
+   shell quoting.
+3. If they see nothing, the usual cause is a `chatId` pointing at a different
+   chat than they expect, or a second bot token being used. Re-check the ID via
+   `getUpdates` before resending, since a blind retry just delivers to the wrong
+   place twice.
+
+Do not claim a message was delivered without a `messageId` in hand. A thrown
+error, a non-zero exit, or a timeout all mean "unknown or failed" — say that
+plainly, because a user who believes a notification went out and acts on it is
+worse off than one who knows it didn't.
+
+## Common failures
+
+Errors surface as the `description` string straight from Telegram's API, so the
+wording is Telegram's, not SendKit's:
+
+| Error | Cause | Fix |
+| --- | --- | --- |
+| `Unauthorized` | Bad or revoked bot token | Re-run `sendkit init`, or fix `TELEGRAM_TOKEN` / the remote URL's token segment |
+| `Bad Request: chat not found` | Wrong `chatId`, or the bot has never been contacted by that user | Confirm the ID via `getUpdates`; the user must message the bot first |
+| `Forbidden: bot was blocked by the user` | Recipient blocked the bot | Nothing SendKit can fix — tell the user |
+| `Bad Request: message text is empty` | Empty or whitespace-only `message` | Supply real text; empty strings are rejected before the call |
+| `TELEGRAM_TOKEN environment variable is not set` | Local MCP server started without its token | Set the env var in the MCP server config and restart the client |
+| `401 unauthorized` from the remote server | Missing or expired OAuth token | Re-authenticate the MCP client against the remote server |
+
+Retrying an identical send after a *successful* call sends a second message —
+Telegram has no deduplication here. Only retry after a confirmed failure.
+
+## Setting up a surface that isn't wired yet
+
+If neither path is available, set one up rather than reaching for the Telegram
+API by hand — the point of SendKit is that the token lives in one place instead
+of being pasted into ad-hoc `curl` calls.
+
+Local MCP server, registered with the user's MCP client:
 
 ```json
 {
   "mcpServers": {
     "sendkit": {
-      "command": "sendkit-mcp",
-      "env": { "TELEGRAM_TOKEN": "123456:ABC-your-bot-token" }
+      "command": "npx",
+      "args": ["-y", "@ferfarbader/sendkit-mcp"],
+      "env": { "TELEGRAM_TOKEN": "<botToken>" }
     }
   }
 }
 ```
 
-**Watch the env var name.** The server reads `TELEGRAM_TOKEN`, but this repo's `.env.example`
-defines `TELEGRAM_BOT_TOKEN`. Copying `.env.example` and expecting the MCP server to pick it up
-produces `TELEGRAM_TOKEN environment variable is not set`. When that error appears, check the name
-before checking the value.
+The client must be restarted before the `telegram` tool appears; a missing tool
+right after editing config usually just means the server hasn't been reloaded.
 
-For local development against the workspace source, run `bun run dev:local-mcp` instead of the
-published binary.
-
-### Wiring up the remote MCP server
-
-The remote server is Clerk-authenticated Streamable HTTP. The bot token is a path segment, so each
-bot gets its own endpoint URL:
-
-```
-POST https://<host>/<botToken>/mcp
-Authorization: Bearer <clerk-oauth-token>
-```
-
-Unauthenticated requests get a `401` plus a `WWW-Authenticate` header pointing at the protected
-resource metadata, which is how a compliant MCP client discovers the OAuth flow on its own. That
-discovery route is spelled `/.well-known/oauth-protected-ressource/:botToken/mcp` — note the
-double-`s` `ressource`, which deviates from the spec's `oauth-protected-resource`. If a client
-can't discover auth, this spelling is the first thing to check.
-
-It needs `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` set or it refuses to boot. Run it with
-`bun run dev:remote-mcp`.
-
-## Sending via the CLI
-
-Two commands. Configure once, then send.
+CLI:
 
 ```bash
-# One-time: writes ~/.config/sendkit/config.json with mode 0600
-sendkit init --telegram-bot-token "123456:ABC-your-bot-token"
-
-# Send. chatId first, then the message as a single argument.
-sendkit telegram "123456789" "Build passed on main."
+npm install -g @ferfarbader/sendkit
+sendkit init --telegram-bot-token <botToken>
 ```
 
-On success it prints one line of JSON to stdout — `{"ok":true,"chatId":"123456789","messageId":42}` —
-so pipe it to `jq` when scripting rather than parsing the text.
+Remote MCP server: point the client at `https://<host>/<botToken>/mcp`. It is an
+OAuth-protected endpoint, so the client completes an authorization flow before
+the first tool call — there is no way to bypass that with a raw token header.
 
-Two things that trip people up:
-
-- **The CLI ignores environment variables.** It reads only the config file. `TELEGRAM_TOKEN` and
-  `TELEGRAM_BOT_TOKEN` do nothing here. If you see `Telegram Bot token is required. Run
-  \`sendkit init\``, the fix is `sendkit init`, not exporting a variable.
-- **Quote the message.** Without quotes the shell splits it into extra arguments and Commander
-  rejects the call. On PowerShell, prefer single quotes when the text contains `$`.
-
-For workspace development, `bun run dev:cli -- telegram "<chatId>" "<message>"` runs the same code
-from source.
-
-## Message content
-
-`sendTelegramMessage` posts `{ chat_id, text }` to Telegram's `sendMessage` — nothing else. There is
-no `parse_mode`, so **Markdown and HTML are not rendered**. `*bold*` arrives as literal asterisks.
-
-Write for plain text: line breaks and emoji work, so lead with the outcome and keep it short. Don't
-build formatted reports here — if the user wants rich output, send a short notification and put the
-detail somewhere that renders it.
-
-Telegram caps a single message at 4096 characters and rejects longer ones, and SendKit doesn't split
-or truncate. Trim before sending, or send a summary plus a link.
-
-## Manual verification
-
-When the user asks you to verify SendKit works, prove the full path rather than reading code. Send a
-real message to a chat the user controls and confirm the `messageId` came back. A send that returns
-no `messageId` did not happen.
-
-Ask for the chat ID if you don't have one — don't guess, and don't reuse a chat ID from an unrelated
-part of the conversation. Messaging the wrong chat is visible to real people and can't be undone by
-you.
-
-To get a chat ID: message the bot from the target chat, then open
-`https://api.telegram.org/bot<token>/getUpdates` and read `result[].message.chat.id`.
-
-Checklist for a full manual pass:
-
-1. `sendkit init --telegram-bot-token "<token>"`, then `sendkit telegram "<chatId>" "sendkit cli check"` — proves core + Telegram credentials.
-2. Start the local MCP server with `TELEGRAM_TOKEN` set, call the `telegram` tool with the same `chatId` — proves the MCP surface.
-3. Confirm both messages arrived in the chat and both returned distinct `messageId`s.
-
-If step 1 works and step 2 doesn't, the fault is in MCP wiring or the env var name, not in the
-Telegram credentials. That split is the main reason to keep the CLI around.
-
-## Troubleshooting
-
-Errors surface Telegram's own `description` field, so read the message rather than pattern-matching
-on status codes.
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `TELEGRAM_TOKEN environment variable is not set` | Local MCP has no token, or it's set as `TELEGRAM_BOT_TOKEN` | Set `TELEGRAM_TOKEN` in the server's `env` block |
-| `Telegram Bot token is required. Run \`sendkit init\`` | No CLI config file, or it has no token | Run `sendkit init --telegram-bot-token ...` |
-| `Unauthorized` / 401 from Telegram | Bot token is wrong or revoked | Re-issue via BotFather, re-run `init` |
-| `chat not found` | Wrong `chatId`, or the bot was never added to that chat | Verify with `getUpdates`; add the bot to the group |
-| `bot was blocked by the user` | Recipient blocked the bot | Nothing to fix in code — tell the user |
-| Zod error on `chatId` or `message` | Passed a number, or an empty string | Both must be non-empty strings |
-| `401 {"error":"unauthorized"}` from remote MCP | Missing or invalid Clerk Bearer token | Complete the OAuth flow; check the `ressource` spelling in the discovery URL |
+Either way, the user supplies the bot token from
+[@BotFather](https://t.me/BotFather); creating a bot is theirs to do, not
+something to automate on their behalf.
 
 ## Handling the bot token
 
-A Telegram bot token is a full credential: anyone holding it can read and send as the bot. Keep it
-out of chat, out of committed files, and out of anything you echo back to the user.
-
-Prefer the MCP surfaces, where the server injects the token and you never see it. When you must use
-the CLI, pass the token only inside the `sendkit init` call — it lands in a `0600` config file and
-subsequent sends don't restate it. If the user pastes a token into the conversation, use it but don't
-repeat it in your replies, and mention that it's now in their history and worth rotating.
+A Telegram bot token is a live credential: anyone holding it can send as that
+bot and read everything the bot receives. So keep it out of anything that gets
+copied around — don't echo it back in chat, don't paste it into a commit, and
+prefer the MCP `env` block or `sendkit init` over inlining it in a command that
+lands in shell history. `sendkit init` writes its config file `0600` for exactly
+this reason. If a token has already leaked somewhere visible, say so and point
+the user at BotFather's `/revoke` instead of quietly continuing to use it.
