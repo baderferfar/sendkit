@@ -25,12 +25,9 @@
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "commander": "^15.0.0"
-  }
+  "workspaces": ["apps/*", "packages/*"],
+  "dependencies":{"commander": "^15.0.0"}
 }
+
+
+

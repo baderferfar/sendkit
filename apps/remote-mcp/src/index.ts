@@ -1,4 +1,3 @@
-
 import { Hono, type Context } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createClerkClient } from "@clerk/backend";
@@ -51,7 +50,7 @@ function createServer(botToken: string) {
     },
   );
   return server;
-}
+};
 
 const app = new Hono();
 
@@ -111,7 +110,12 @@ app.notFound((c) => {
   return c.json({ error: "Not Found" }, 404);
 });
 
+<<<<<<< HEAD
 const port = Number(process.env.PORT ?? 3000);
+=======
+const port = Number(process.env.PORT ?? "3000");
+//console.log(`Listening on port ${port}...`);
+>>>>>>> 0e9abfccfb6347ea41e564d7b82ded6bc9b4e87b
 
 export default {
   port,
